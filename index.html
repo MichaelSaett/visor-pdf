@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visor Pro - e-Gestión (Página Única & Zoom Nítido)</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+    <style>
+        :root { 
+            --color-primario: #00C853; 
+            --color-secundario: #007bff; 
+            --bg-viewer: #525659;
+        }
+        
+        body { 
+            background: #e9ecef; margin: 0; font-family: sans-serif; 
+            height: 100vh; display: flex; flex-direction: column; overflow: hidden; 
+        }
+
+        .paginacion-container { 
+            background: white; padding: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); z-index: 10;
+        }
+        
+        .btn-upload { position: relative; overflow: hidden; cursor: pointer; }
+        .btn-upload input[type=file] { 
+            position: absolute; top: 0; right: 0; min-width: 100%; min-height: 100%; 
+            font-size: 100px; text-align: right; opacity: 0; cursor: pointer; display: block; 
+        }
+
+        #visor-wrapper {
+            flex: 1; width: 100%; background: var(--bg-viewer);
+            overflow: auto; /* Permite scroll cuando hay zoom */
+            position: relative; display: flex; justify-content: center; align-items: flex-start;
+            padding: 30px 0;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+        }
+
+        #documentContainer {
+            display: inline-block;
+            text-align: left; /* Restaura la alineación del texto interno */
+            margin: 0 auto;
+        }
+        
+        #mensaje-inicial {
+            top: 50%; position: absolute; transform: translateY(-50%); color: #ccc; text-align: center;
+        }
+
+        /* Contenedor de la página única */
+        .page-wrapper {
+            background: white; position: relative; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            /* Ancho y alto se inyectan por JS según el Zoom para no perder calidad */
+        }
+
+        .layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+        .layer-visual canvas { display: block; width: 100%; height: 100%; }
+
+        .textLayer {
+            z-index: 2; overflow: hidden; line-height: 1; pointer-events: auto;
+            -webkit-text-size-adjust: none; -moz-text-size-adjust: none; text-size-adjust: none;
+        }
+        .textLayer > span {
+            color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%;
+        }
+        .textLayer > span::selection { background: rgba(0, 123, 255, 0.3); }
+
+        .layer-interaction { z-index: 5; pointer-events: none; }
+
+        .firma-box {
+            position: absolute; display: flex; align-items: center; justify-content: center;
+            font-weight: bold; border-radius: 4px; box-sizing: border-box;
+            pointer-events: auto; user-select: none; cursor: pointer;
+            transform: translate(-50%, -50%); font-size: 14px;
+        }
+        .firma-box.interno { background: rgba(0, 200, 83, 0.15); border: 2px solid var(--color-primario); color: #157347; }
+        /* Contrast ratio: #157347 on effective bg rgb(217,247,229) = 5.14:1 (passes WCAG AA 4.5:1) */
+        .firma-box.externo { background: rgba(0, 123, 255, 0.15); border: 2px solid var(--color-secundario); color: #0056b3; }
+        /* Contrast ratio: #0056b3 on effective bg rgb(217,235,255) = 5.79:1 (passes WCAG AA 4.5:1) */
+    </style>
+</head>
+<body>
+    
+    <!-- PAGINADOR SUPERIOR -->
+    <div class="paginacion-container d-flex flex-column flex-lg-row align-items-center justify-content-center gap-3" role="toolbar" aria-label="Controles de navegación y zoom del documento">
+        <div class="btn-upload btn btn-success rounded-pill btn-sm" title="Cargar archivo PDF">
+            <i class="fa fa-file-pdf-o" aria-hidden="true"></i> Cargar PDF 
+            <input type="file" id="file-input" accept="application/pdf" aria-label="Seleccionar archivo PDF">
+        </div>
+
+        <div class="d-flex align-items-center justify-content-center" role="group" aria-label="Navegación de páginas">
+            <button class="btnInicio btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la primera página" title="Primera página"><i class="fa fa-angle-double-left"></i></button>
+            <button class="btnAnterior btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la página anterior" title="Página anterior"><i class="fa fa-arrow-left"></i></button>
+            
+            <span class="mx-2 text-muted text-nowrap" aria-live="polite">Pág. 
+                <input type="number" class="input-pagina" style="width: 50px; text-align: center; border: 1px solid #ccc; border-radius: 4px;" value="1" aria-label="Número de página actual"> 
+                de <span class="total-paginas">0</span>
+            </span>
+            
+            <button class="btnSiguiente btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la página siguiente" title="Página siguiente"><i class="fa fa-arrow-right"></i></button>
+            <button class="btnFinal btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la última página" title="Última página"><i class="fa fa-angle-double-right"></i></button>
+        </div>
+
+        <div class="d-none d-lg-block" style="width: 1px; height: 20px; background: #ddd;" aria-hidden="true"></div>
+
+        <div class="d-flex align-items-center justify-content-center" role="group" aria-label="Controles de zoom">
+            <button class="btnZoomOut btn btn-sm btn-outline-secondary rounded-pill mx-1" title="Alejar" aria-label="Reducir zoom"><i class="fa fa-search-minus"></i></button>
+            <span class="zoom-label text-muted mx-1" style="font-size: 0.85rem; min-width: 45px; text-align: center;" aria-live="polite" aria-atomic="true">100%</span>
+            <button class="btnZoomIn btn btn-sm btn-outline-secondary rounded-pill mx-1" title="Acercar" aria-label="Aumentar zoom"><i class="fa fa-search-plus"></i></button>
+        </div>
+    </div>
+
+    <!-- EL VISOR DEL DOCUMENTO -->
+    <div id="visor-wrapper" role="document" aria-label="Área de visualización del documento PDF" aria-busy="false">
+        <div id="mensaje-inicial" role="status">
+            <h4><i class="fa fa-upload" aria-hidden="true"></i> Esperando documento...</h4>
+            <p>Selecciona un archivo PDF real para procesar.</p>
+        </div>
+        
+        <!-- Aquí se renderizará ÚNICAMENTE la página actual -->
+        <div id="documentContainer" style="display: none;"></div>
+    </div>
+
+    <!-- PAGINADOR INFERIOR -->
+    <div class="paginacion-container d-flex flex-column flex-lg-row align-items-center justify-content-center gap-3" style="border-top: 1px solid #ddd;" role="toolbar" aria-label="Controles de navegación y zoom del documento (inferior)">
+        <div class="d-flex align-items-center justify-content-center" role="group" aria-label="Navegación de páginas">
+            <button class="btnInicio btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la primera página" title="Primera página"><i class="fa fa-angle-double-left"></i></button>
+            <button class="btnAnterior btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la página anterior" title="Página anterior"><i class="fa fa-arrow-left"></i></button>
+            
+            <span class="mx-2 text-muted text-nowrap" aria-live="polite">Pág. 
+                <input type="number" class="input-pagina" style="width: 50px; text-align: center; border: 1px solid #ccc; border-radius: 4px;" value="1" aria-label="Número de página actual"> 
+                de <span class="total-paginas">0</span>
+            </span>
+            
+            <button class="btnSiguiente btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la página siguiente" title="Página siguiente"><i class="fa fa-arrow-right"></i></button>
+            <button class="btnFinal btn btn-sm btn-outline-primary rounded-pill mx-1" aria-label="Ir a la última página" title="Última página"><i class="fa fa-angle-double-right"></i></button>
+        </div>
+
+        <div class="d-none d-lg-block" style="width: 1px; height: 20px; background: #ddd;" aria-hidden="true"></div>
+
+        <div class="d-flex align-items-center justify-content-center" role="group" aria-label="Controles de zoom">
+            <button class="btnZoomOut btn btn-sm btn-outline-secondary rounded-pill mx-1" title="Alejar" aria-label="Reducir zoom"><i class="fa fa-search-minus"></i></button>
+            <span class="zoom-label text-muted mx-1" style="font-size: 0.85rem; min-width: 45px; text-align: center;" aria-live="polite" aria-atomic="true">100%</span>
+            <button class="btnZoomIn btn btn-sm btn-outline-secondary rounded-pill mx-1" title="Acercar" aria-label="Aumentar zoom"><i class="fa fa-search-plus"></i></button>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            'use strict';
+
+            const pdfjsLib = window['pdfjs-dist/build/pdf'];
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+            // === Funciones puras extraídas para testabilidad ===
+
+            function calcularPaginaDestino(num, totalPaginas) {
+                return Math.max(1, Math.min(num, totalPaginas));
+            }
+
+            function calcularNuevoZoom(zoomActual, delta) {
+                return Math.max(0.5, Math.min(zoomActual + delta, 3.0));
+            }
+
+            function calcularEscalaFinal(escalaBase, zoom) {
+                return escalaBase * zoom;
+            }
+
+            function calcularDimensionesCanvas(viewportWidth, viewportHeight, dpr) {
+                return {
+                    width: Math.floor(viewportWidth * dpr),
+                    height: Math.floor(viewportHeight * dpr)
+                };
+            }
+
+            function filtrarFirmasPorPagina(firmas, pagina) {
+                return firmas.filter(f => f.pagina === pagina);
+            }
+
+            // Exponer funciones puras para testing vía window.__visorUtils
+            window.__visorUtils = {
+                calcularPaginaDestino,
+                calcularNuevoZoom,
+                calcularEscalaFinal,
+                calcularDimensionesCanvas,
+                filtrarFirmasPorPagina
+            };
+
+            // === Clase principal del visor ===
+
+            class VisorSinglePage {
+                constructor() {
+                    this.estado = {
+                        paginaActual: 1,
+                        totalPaginas: 0, 
+                        zoom: 1.0,  // 1.0 = 100%
+                        escalaBase: 1.5, // Resolución base para que se vea nítido en pantallas normales
+                        activo: false,
+                        renderizando: false
+                    };
+
+                    this.pdfDoc = null;
+
+                    this.dom = {
+                        wrapper: document.getElementById('visor-wrapper'),
+                        container: document.getElementById('documentContainer'),
+                        mensaje: document.getElementById('mensaje-inicial'),
+                        fileInput: document.getElementById('file-input'),
+                        inputsPagina: document.querySelectorAll('.input-pagina'),
+                        labelsTotal: document.querySelectorAll('.total-paginas'),
+                        labelsZoom: document.querySelectorAll('.zoom-label')
+                    };
+
+                    this.mockFirmas = [
+                        { x: 50, y: 80, width: 200, height: 60, pagina: 1, nombre: 'Firma Analista Level 2', tipo: 'interno' },
+                        { x: 50, y: 50, width: 200, height: 60, pagina: 2, nombre: 'Firma Cliente', tipo: 'externo' }
+                    ];
+
+                    this.inicializarEventos();
+                }
+
+                inicializarEventos() {
+                    this.dom.fileInput.addEventListener('change', (e) => {
+                        if (e.target.files.length > 0) this.cargarDocumento(URL.createObjectURL(e.target.files[0]));
+                    });
+
+                    this.dom.inputsPagina.forEach(input => {
+                        input.addEventListener('change', (e) => this.irAPagina(parseInt(e.target.value)));
+                    });
+
+                    const vincularBotones = (clase, accion) => {
+                        document.querySelectorAll(clase).forEach(btn => btn.addEventListener('click', accion));
+                    };
+
+                    vincularBotones('.btnInicio', () => this.irAPagina(1));
+                    vincularBotones('.btnFinal', () => this.irAPagina(this.estado.totalPaginas));
+                    vincularBotones('.btnAnterior', () => this.irAPagina(this.estado.paginaActual - 1));
+                    vincularBotones('.btnSiguiente', () => this.irAPagina(this.estado.paginaActual + 1));
+                    vincularBotones('.btnZoomIn', () => this.cambiarZoom(0.25));
+                    vincularBotones('.btnZoomOut', () => this.cambiarZoom(-0.25));
+                }
+
+                async cargarDocumento(url) {
+                    try {
+                        this.dom.mensaje.innerHTML = `<h4><i class="fa fa-spinner fa-spin"></i> Procesando PDF...</h4>`;
+                        this.dom.mensaje.style.display = 'block';
+                        this.dom.container.style.display = 'none';
+                        this.pdfDoc = await pdfjsLib.getDocument(url).promise;
+                        this.estado.totalPaginas = this.pdfDoc.numPages;
+                        this.estado.activo = true;
+                        
+                        this.dom.mensaje.style.display = 'none';
+                        this.dom.container.style.display = 'block';
+                        this.dom.labelsTotal.forEach(l => l.innerText = this.estado.totalPaginas);
+                        
+                        this.irAPagina(1);
+                    } catch (error) {
+                        this.dom.mensaje.innerHTML = `<h4><i class="fa fa-exclamation-triangle text-warning"></i> Error al cargar el documento</h4><p class="text-muted">No se pudo procesar el archivo PDF. Verifique que el archivo sea un PDF válido e intente nuevamente.</p>`;
+                        this.dom.mensaje.style.display = 'block';
+                        this.dom.container.style.display = 'none';
+                        this.estado.activo = false;
+                    }
+                }
+
+                async irAPagina(num) {
+                    if (!this.estado.activo || this.estado.renderizando) return;
+                    
+                    this.estado.paginaActual = calcularPaginaDestino(num, this.estado.totalPaginas);
+                    this.actualizarUI();
+                    await this.renderizarPaginaActual();
+                }
+
+                async cambiarZoom(delta) {
+                    if (!this.estado.activo || this.estado.renderizando) return;
+                    
+                    this.estado.zoom = calcularNuevoZoom(this.estado.zoom, delta);
+                    
+                    this.actualizarUI();
+                    // EL SECRETO: Al hacer zoom, volvemos a renderizar el PDF con el nuevo multiplicador
+                    await this.renderizarPaginaActual(); 
+                }
+
+                async renderizarPaginaActual() {
+                    this.estado.renderizando = true;
+                    this.dom.wrapper.setAttribute('aria-busy', 'true');
+                    this.dom.container.innerHTML = `<div class="text-center p-5"><i class="fa fa-circle-o-notch fa-spin fa-2x text-muted" aria-hidden="true"></i><span class="visually-hidden">Cargando página...</span></div>`;
+
+                    try {
+                        const page = await this.pdfDoc.getPage(this.estado.paginaActual);
+                        
+                        // Calculamos la escala real para PDF.js (Zoom nativo y nítido)
+                        const escalaFinal = calcularEscalaFinal(this.estado.escalaBase, this.estado.zoom);
+                        const viewport = page.getViewport({ scale: escalaFinal });
+
+                        // Creamos el contenedor de la página
+                        const pageWrapper = document.createElement('div');
+                        pageWrapper.className = 'page-wrapper';
+                        pageWrapper.style.width = `${viewport.width}px`;
+                        pageWrapper.style.height = `${viewport.height}px`;
+
+                        pageWrapper.innerHTML = `
+                            <div class="layer layer-visual">
+                                <canvas id="pdf-canvas"></canvas>
+                            </div>
+                            <div class="layer textLayer" id="text-layer"></div>
+                            <div class="layer layer-interaction" id="interact-layer"></div>
+                        `;
+
+                        this.dom.container.innerHTML = ''; // Limpiamos el loader
+                        this.dom.container.appendChild(pageWrapper);
+
+                        // 1. Renderizar Canvas Nítido
+                        const canvas = document.getElementById('pdf-canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Ajuste para pantallas Retina/Alta densidad
+                        const ratio = window.devicePixelRatio || 1;
+                        const dims = calcularDimensionesCanvas(viewport.width, viewport.height, ratio);
+                        canvas.width = dims.width;
+                        canvas.height = dims.height;
+                        ctx.scale(ratio, ratio);
+
+                        await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+                        // 2. Renderizar Capa de Texto
+                        const textLayerDiv = document.getElementById('text-layer');
+                        textLayerDiv.style.setProperty('--scale-factor', viewport.scale);
+                        const textContent = await page.getTextContent();
+                        
+                        await pdfjsLib.renderTextLayer({
+                            textContentSource: textContent,
+                            container: textLayerDiv,
+                            viewport: viewport,
+                            textDivs: []
+                        }).promise;
+
+                        // 3. Inyectar Firmas
+                        this.inyectarFirmas(this.estado.paginaActual);
+
+                    } catch (error) {
+                        console.error(error);
+                    } finally {
+                        this.estado.renderizando = false;
+                        this.dom.wrapper.setAttribute('aria-busy', 'false');
+                    }
+                }
+
+                /**
+                 * Obtiene las firmas correspondientes a una página específica.
+                 * Actualmente filtra desde el array local mockFirmas.
+                 * 
+                 * Para integración con API REST en PHP, reemplazar el cuerpo por:
+                 *   async obtenerFirmas(numPagina) {
+                 *       const response = await fetch(`/api/firmas?pagina=${numPagina}`);
+                 *       return response.json();
+                 *   }
+                 * Y ajustar inyectarFirmas() para manejar la promesa con await.
+                 */
+                obtenerFirmas(numPagina) {
+                    return filtrarFirmasPorPagina(this.mockFirmas, numPagina);
+                }
+
+                inyectarFirmas(numPagina) {
+                    const layer = document.getElementById(`interact-layer`);
+                    if (!layer) return;
+
+                    const firmas = this.obtenerFirmas(numPagina);
+                    
+                    firmas.forEach(firma => {
+                        const box = document.createElement('div');
+                        box.className = `firma-box ${firma.tipo}`;
+                        
+                        // Posición siempre será perfecta independientemente del zoom
+                        box.style.left = `${firma.x}%`;
+                        box.style.top = `${firma.y}%`;
+                        box.style.width = `${firma.width * this.estado.zoom}px`;
+                        box.style.height = `${firma.height * this.estado.zoom}px`;
+                        
+                        box.innerHTML = `<i class="fa ${firma.tipo === 'interno' ? 'fa-check-circle' : 'fa-pencil'} mx-2"></i> ${firma.nombre}`;
+                        layer.appendChild(box);
+                    });
+                }
+
+                actualizarUI() {
+                    this.dom.inputsPagina.forEach(input => input.value = this.estado.paginaActual);
+                    
+                    const porcentaje = Math.round(this.estado.zoom * 100) + "%";
+                    this.dom.labelsZoom.forEach(l => l.innerText = porcentaje);
+
+                    const esPrimera = this.estado.paginaActual <= 1;
+                    const esUltima = this.estado.paginaActual >= this.estado.totalPaginas;
+
+                    document.querySelectorAll('.btnInicio, .btnAnterior').forEach(b => b.disabled = esPrimera);
+                    document.querySelectorAll('.btnSiguiente, .btnFinal').forEach(b => b.disabled = esUltima);
+                }
+            }
+
+            document.addEventListener('DOMContentLoaded', () => new VisorSinglePage());
+        })();
+    </script>
+</body>
+</html>
